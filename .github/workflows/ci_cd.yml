@@ -1,0 +1,90 @@
+name: Package Application
+
+on:
+  push:
+    branches: 
+      - main  
+
+env:  
+  PACKAGE_NAME: Helloworld
+  OCTOPUS_PROJECT_NAME: Helloworld 
+  VERSION: "${{ secrets.APP_VERSION }}" 
+  OCTOPUS_URL: ${{ secrets.OCTOPUS_SERVER_URL }}
+  OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}      
+  ENVIRONMENT: Development
+
+jobs:
+  build:
+    name: Install and test changes
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-node@v1
+
+    - name: Install packages
+      run: npm install
+
+    - name: Create env file
+      run: |
+        touch .env
+        echo PORT=8080 >> .env
+        echo TIMEZONE=portugal/lisbon >> .env
+      shell: bash
+    
+    - name: Run test
+      run: npm test
+
+  deploy:
+    needs: build
+    name: Deploy code to server
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-node@v1
+
+    - name: Install Octopus Tooling
+      run: choco install octopustools -y
+      shell: powershell
+
+    - name: Install all dependencies
+      run: npm install
+
+    - name: Build package
+      run: |        
+        octo pack --format="nupkg" --id="${env:PACKAGE_NAME}" --title="${env:PACKAGE_NAME}" --version="${env:VERSION}.${env:GITHUB_RUN_NUMBER}" --verbose
+      shell: powershell
+ 
+    - name: Push package to Octopus Package Feed
+      run: |        
+        octo push --package="${env:PACKAGE_NAME}.${env:VERSION}.${env:GITHUB_RUN_NUMBER}.nupkg" --server="${env:OCTOPUS_URL}" --apiKey="${env:OCTOPUS_API_KEY}"
+      shell: powershell
+
+    - name: Create package information
+      run: |          
+        $commitMessage = git log -1 --pretty=oneline
+        $commitMessage = $commitMessage -replace "${env:GITHUB_SHA} ", ""
+        $jsonBody = @{
+          BuildEnvironment = "GitHub Actions"
+          BuildNumber = "${env:VERSION}.${env:GITHUB_RUN_NUMBER}"
+          BuildUrl = "https://github.com/${env:GITHUB_REPOSITORY}/actions/runs/${env:GITHUB_RUN_ID}"
+          VcsCommitNumber = "${env:GITHUB_SHA}"
+          VcsType = "Git"
+          VcsRoot = "https://github.com/${env:GITHUB_REPOSITORY}.git"
+          Commits = @(
+            @{
+              Id = "${env:GITHUB_SHA}"
+              LinkUrl = "https://github.com/${env:GITHUB_REPOSITORY}/commit/${env:GITHUB_SHA}"
+              Comment = "$commitMessage"
+            }
+          )
+        } | ConvertTo-Json -Depth 10
+        New-Item "buildinformation.json" -ItemType File
+        Set-Content -Path "buildinformation.json" -Value $jsonBody
+
+        octo build-information --package-id="${env:PACKAGE_NAME}" --file="buildinformation.json" --version="${env:VERSION}.${env:GITHUB_RUN_NUMBER}" --server="${env:OCTOPUS_URL}" --apiKey="${env:OCTOPUS_API_KEY}"
+      shell: powershell
+     
+    - name: Push to Octopus servers to deploy to set server environments
+      run: |          
+        octo create-release --project="${env:OCTOPUS_PROJECT_NAME}" --version="${env:VERSION}.${env:GITHUB_RUN_NUMBER}" --packageVersion="${env:VERSION}.${env:GITHUB_RUN_NUMBER}" --releaseNumber="${env:VERSION}.${env:GITHUB_RUN_NUMBER}" --server="${env:OCTOPUS_URL}" --apiKey="${env:OCTOPUS_API_KEY}" --deployTo="${env:ENVIRONMENT}"
+      shell: powershell   
