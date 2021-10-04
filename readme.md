@@ -1,0 +1,4 @@
+- Run `npm install` to install dependencies
+- Rename `.env.example` to `.env`
+- Run `npm start` to start the application
+- Run `npm test` to test the application
